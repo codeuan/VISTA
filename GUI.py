@@ -1,21 +1,17 @@
 from vista import run_program
 import tkinter as tk
-from tkinter import ttk
-from tkinter import messagebox
+from tkinter import ttk, messagebox, filedialog
+from pathlib import Path
+import csv
 import numpy as np
 import rasterio
 from rasterio.plot import show
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-from tkinter import ttk, filedialog, messagebox
-from pathlib import Path
+from matplotlib import cm
+from matplotlib.colors import Normalize
 from pyproj import Transformer
-import csv
-from matplotlib.colors import ListedColormap
-import matplotlib.pyplot as plt
-from matplotlib.colors import BoundaryNorm, ListedColormap
-
-
+import matplotlib.image as mpimg
 tif_path = None #file to be loaded from.
 metadata_csv_path = None #file containing sample metadata.
 loaded_sample_metadata = [] #store metadata loaded from CSV.
@@ -28,7 +24,7 @@ def start_gui(run_program): #entry point for the program.
         if not (0 <= row_index < len(sample_entries)):
             return
 
-        lon_entry, lat_entry, _ = sample_entries[row_index]
+        lon_entry, lat_entry, _, _ = sample_entries[row_index]
 
         lon_entry.delete(0, tk.END) #delete text from longitude box.
         lon_entry.insert(0, f"{lon:.6f}") #insert given longitude with 6 decimal digits of precision.
@@ -295,6 +291,7 @@ def start_gui(run_program): #entry point for the program.
                     if self.tip is not None:
                         self.tip.destroy() #remove window.
                         self.tip = None #...and the reference to it.
+
     def populate_sample_entries(samples):
         for lon_entry, lat_entry, height_entry, heading_entry in sample_entries: #for each entry row in the GUI.
             lon_entry.delete(0, tk.END)
@@ -359,6 +356,7 @@ def start_gui(run_program): #entry point for the program.
     
     def metadata_handler(): 
         selected_metadata_var = tk.StringVar(value=metadata_csv_path if metadata_csv_path else "No metadata CSV selected") #Tkinter text displaying the current CSV path or "No metadata CSV selected".
+
         def load_metadata_file(): 
             global metadata_csv_path 
             global loaded_sample_metadata 
@@ -437,13 +435,26 @@ def start_gui(run_program): #entry point for the program.
             })
 
         return samples #return inputs once validated so run_program can be run.
+
+    def validate_max_distance():
+        value_text = max_distance_var.get().strip()
+        if not value_text:
+            raise ValueError("Please enter a maximum distance.")
+        try:
+            value = float(value_text)
+        except ValueError:
+            raise ValueError("Maximum distance must be a number.")
+        if value <= 0:
+            raise ValueError("Maximum distance must be greater than 0 metres.")
+        return value
         
     def show_error(message):
             error_label.config(text=message) #update the error label with the error text.
 
-    def file_hanlder():
+    def file_handler():
         
             selected_file_var = tk.StringVar(value=tif_path if tif_path else "No file selected") #default display when no file selected.
+
             def validate_file(file_path):
                 ext = Path(file_path).suffix.lower() #obtain ending of file name.
 
@@ -454,7 +465,7 @@ def start_gui(run_program): #entry point for the program.
                 global tif_path
                 file_path = filedialog.askopenfilename(
                     parent=root, #pop up must be shown in the app.
-                    title="Open file for SeeGULL", #text at the top of window.
+                    title="Open file for VISTA", #text at the top of window.
                     initialdir=".", #begin browsing in the directory of the program.
                     filetypes=[
                         ("GeoTIFF files", "*.tif *.tiff"),
@@ -476,7 +487,7 @@ def start_gui(run_program): #entry point for the program.
             top_bar = ttk.Frame(root, padding=8) #create a container for the file button and text.
             top_bar.grid(row=0, column=0, columnspan=2, sticky="ew") #stretch horizontally.
 
-            file_button = ttk.Button(top_bar, text="File", command=load_file) #create button that runs "load_file" when clicked.
+            file_button = ttk.Button(top_bar, text="DEM", command=load_file)
             file_button.pack(side="left") #move to the leftmost side.
 
             file_label = ttk.Label(top_bar, textvariable=selected_file_var) #label for currently selected file, or default text if no file loaded.
@@ -487,6 +498,47 @@ def start_gui(run_program): #entry point for the program.
 
             metadata_label = ttk.Label(top_bar, textvariable=selected_metadata_var) #label for currently selected metadata CSV, or default text if no file loaded.
             metadata_label.pack(side="left", padx=10) #move to the leftmost side, next to the button.
+
+            max_distance_label = ttk.Label(top_bar, text="Max distance (m):")
+            max_distance_label.pack(side="left", padx=(20, 4))
+
+            max_distance_entry = ttk.Entry(top_bar, width=10, textvariable=max_distance_var)
+            max_distance_entry.pack(side="left")
+
+    preview_window = None
+
+    def open_visibility_window(image_path):
+        nonlocal preview_window
+
+        path = Path(image_path)
+        if not path.exists():
+            messagebox.showwarning(
+                "Preview not found",
+                f"Could not find:\n{path.resolve()}",
+            )
+            return
+
+        if preview_window is not None and preview_window.winfo_exists():
+            preview_window.destroy()
+
+        preview_window = tk.Toplevel(root)
+        preview_window.title("Visibility frequency")
+        preview_window.geometry("1100x850")
+
+        fig = Figure(figsize=(10, 8), dpi=100)
+        ax = fig.add_subplot(111)
+
+        img = mpimg.imread(path)
+        ax.imshow(img)
+        ax.axis("off")
+        fig.tight_layout()
+
+        canvas = FigureCanvasTkAgg(fig, master=preview_window)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        preview_window._fig = fig
+        preview_window._canvas = canvas
             
     def submit():
             global tif_path
@@ -496,12 +548,14 @@ def start_gui(run_program): #entry point for the program.
                     raise ValueError("Please select a GeoTIFF file first.")
 
                 sample_metadata = validate_inputs() #validate the user's inputs.
+                max_distance = validate_max_distance()
 
                 right_sidebar.load_dem(tif_path) #load DEM into preview.
 
                 result = run_program(
                     sample_metadata,
                     tif_path,
+                    max_distance,
                     show_reference=False
                 ) #run the main program with the three values on the embedded axes.
 
@@ -514,6 +568,12 @@ def start_gui(run_program): #entry point for the program.
                 right_sidebar.toggle_overlay() #update preview with current toggle state.
 
                 right_sidebar.canvas.draw_idle() #refresh the embedded preview.
+
+                preview_png_path = result.get(
+                    "preview_png_path",
+                    "visibility_frequency_cropped.png",
+                )
+                open_visibility_window(preview_png_path)
 
             except ValueError as e:
                 show_error(str(e)) #handle invalid number input.
@@ -531,6 +591,8 @@ def start_gui(run_program): #entry point for the program.
 
     left_panel = ttk.Frame(root, padding=12)
     left_panel.grid(row=1, column=0, sticky="ns") #define region for left panel.
+
+    max_distance_var = tk.StringVar(value="500.0")
 
     selected_metadata_var, load_metadata_file = metadata_handler() #create button to load in a CSV by defining variable and function with does so.
     right_sidebar = RightSideBar(root) #create right hand pannel.
@@ -582,7 +644,7 @@ def start_gui(run_program): #entry point for the program.
     error_label.grid(row=13, column=0, columnspan=9, pady=(0, 10))
     #attach a widget to display information regarding errors.
 
-    file_hanlder()
+    file_handler()
 
     #attach a tooltip to the latitude help widget.
     LeftSideBar(
@@ -613,3 +675,4 @@ def start_gui(run_program): #entry point for the program.
 
     #start Tkinter event loop so it "listens" for user input.
     root.mainloop()
+
