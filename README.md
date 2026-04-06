@@ -6,18 +6,17 @@ Quantifies individual coordinates' view count across several viewpoints and prod
 Inputs: 
 - Observer metadata: manually entered in the GUI, loaded from a CSV file. Required fields: lon, lat, observer_height (m), heading_deg (0-360 egrees).
 - Digital Surface Model or Digital Elevation Model: two options 1) Local DEM (tif or tiff), 2) DEM automatically downloaded from OpenTopography based on observer locations and analysis distance. This second option requires an API key (https://opentopography.org/about)
-- Mannua
 
 Outputs: 
 - Frequency map highlighting how many times each pixel is seen across all images, according to DEM resolution.
 
 
-### Key Features
-Multi-observer visibility aggregation
-Directional field-of-view support
-Interactive GUI for data input and preview
-Optional DEM download from OpenTopography
-Output as GeoTIFF + visual heatmap
+## Key Features
+- Multi-observer visibility aggregation
+- Directional field-of-view support
+- Interactive GUI for data input and preview
+- Optional DEM download from OpenTopography
+- Output as GeoTIFF + visual heatmap
 
 ## Structure
 main.py           → Application entry point  
@@ -46,12 +45,10 @@ conda run -n vista python main.py
 
 
 ## Notes & Limitations
-Requires GDAL CLI (gdal raster viewshed or gdal_raster_viewshed)
-DEM must be north-up (no rotation)
-Results depend on DEM resolution
-Large areas may result in slow downloads or processing
+- Requires GDAL CLI (gdal raster viewshed or gdal_raster_viewshed)
+- DEM must be north-up (no rotation)
+- Results depend on DEM resolution
+- Large areas may result in slow downloads or processing
 
 
-Authors
-Connor Dean-Pijuan 
-Erola Fenollosa (supervisor)
+Authors: Connor Dean-Pijuan and Erola Fenollosa
