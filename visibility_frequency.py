@@ -2,8 +2,7 @@
 
 # Run with:
 #           & "C:\Users\zool2620\AppData\Local\miniconda3\Scripts\conda.exe" run -n vista python visibility_frequency.py
-
-# Fantastic. Now I need help with a very difficult mission. This is my version of the code, but my student produced another version of it that was not fully working. In order to respect his work, could you help me understand his approach
+# This script reads observer locations and metadata from a CSV, computes viewsheds using GDAL's command-line tool, and aggregates the results into a visibility frequency raster. It then saves the aggregated raster as a GeoTIFF and creates a PNG preview with a colorbar and scale bar.
 
 from __future__ import annotations
 
