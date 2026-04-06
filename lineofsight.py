@@ -1,179 +1,259 @@
-#lineofsight.py
-#once ray is constructed, find the cells that it intersects.
-#compute slope to each cell.
-#cell is visible iff it is not behind a cell with a greater slope.
-#repeat for each coordinate, then aggregate.
+from __future__ import annotations
+
+import math
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Iterable, Mapping, Sequence
 
 import numpy as np
-import math
-from typing import Iterable, Tuple, Optional
-from affine import Affine
-from rasterio.transform import rowcol
-from raycasting import cast_rays_360
+import rasterio
+from pyproj import Transformer
+from rasterio.enums import Resampling
+from rasterio.windows import from_bounds, transform as window_transform
+from rasterio.warp import reproject
 
 
-def cell_centre(affine: Affine, r: int, c: int): #compute centre of cell.
-    E, N = affine * (c + 0.5, r + 0.5)
-    return E, N
+CSV_CRS = "EPSG:4326"
+
+if not shutil.which("gdal") and not shutil.which("gdal_raster_viewshed"):
+    raise RuntimeError("GDAL not found. Please install it via conda.")
+
+def find_gdal_viewshed_command() -> list[str]:
+    """
+    Return the available GDAL viewshed command.
+
+    The code prefers the modern `gdal raster viewshed` command, but it also
+    supports older installs exposing `gdal_raster_viewshed`.
+    """
+    if shutil.which("gdal"):
+        return ["gdal", "raster", "viewshed"]
+    if shutil.which("gdal_raster_viewshed"):
+        return ["gdal_raster_viewshed"]
+
+    raise RuntimeError(
+        "Could not find a GDAL viewshed command in the active environment."
+    )
 
 
-def aggregate_line_of_sight(count_mask, E0, N0, dem, src, affine, observer_height,
-                        square_size_m=100, n_rays=720, heading_deg=None, fan_angle_deg=360.0):
+def run_viewshed(
+    dem_path: str,
+    x: float,
+    y: float,
+    observer_h: float,
+    out_tif: str,
+    max_distance: float,
+) -> None:
+    """
+    Run one binary viewshed for a single observer.
+    The observer position is passed as X,Y,H through --pos.
+    """
+    cmd = find_gdal_viewshed_command()
 
-        hits = cast_rays_360(E0, N0, square_size_m=square_size_m, n_rays=n_rays, affine=affine, heading_deg=heading_deg,
-        fan_angle_deg=fan_angle_deg) #cast rays.
-        seen_this_view = np.zeros_like(count_mask, dtype=bool) #a mask with exactly the same function as count_mask, just temporary.
-        for (Eh, Nh) in hits: #for the length of each ray.
-            cells = list(cells_crossed(affine, src.width, src.height, E0, N0, Eh, Nh)) #compute which cells were passed through.
-            if not cells: #in case none were found, skip this ray.
-                continue
+    full_cmd = [
+        *cmd,
+        "--overwrite",
+        "--max-distance",
+        str(max_distance),
+        "--target-height",
+        "0",
+        "--visible-value",
+        "1",
+        "--invisible-value",
+        "0",
+        "--out-of-range-value",
+        "0",
+        "--dst-nodata",
+        "0",
+        "--pos",
+        f"{x},{y},{observer_h}",
+        dem_path,
+        out_tif,
+    ]
 
-
-            visible = line_of_sight(
-            cells,
-            dem,
-            affine,
-            E0,
-            N0,
-            observer_height,
-            nodata=src.nodata
-        ) #retrieve visibility data on each cell, either seen or not seen.
-
-            for (r, c), is_visible in zip(cells, visible):
-                if is_visible:
-                    seen_this_view[r, c] = True #if cell is seen at all, mark it as visible.
-
-        count_mask[seen_this_view] += 1 #increment 1 to the cells that were seen at all (note: only 1 is added to avoid overcounting from distinct rays intersecting the same cell).
-        return count_mask
-
-def line_of_sight(
-    cells: Iterable[Tuple[int, int]],
-    dem,                      # 2D array: dem[r][c] or dem[r, c]
-    affine: Affine,
-    E0: float,
-    N0: float,
-    observer_height: float = 0,
-    nodata: Optional[float] = None,
-    eps: float = 1e-12,
-):
-
-    cells = list(cells) #convert iterable to list to allow indexing.
-    if not cells:
-        return []
-
-    r0, c0 = cells[0] #begin at first cell (observer's point).
-    z0 = float(dem[r0, c0]) + observer_height #find DEM elevation at observer's height.
-
-    visible = [True]
-    max_slope = -math.inf #track the maximum slope seen so far (any slope is greater than negative infinity, so default to that).
-
-    for (r, c) in cells[1:]:
-        z = float(dem[r, c]) #read terrain height of cell.
-        if nodata is not None and z == nodata: #if there is an issue, mark as "invisible" by default.
-            visible.append(False)
-            continue
-
-        E, N = cell_centre(affine, r, c) #find world coordinate of cell's centre.
-
-        d = math.hypot(E - E0, N - N0) #find distance from observer to cell.
-        if d < eps:
-            visible.append(True)
-            continue
-
-        s = (z - z0) / d #find slope from observer to cell.
-
-        if s > max_slope: #if slope is greater than the previous max slope, update max slope.
-            visible.append(True) #make it visible.
-            max_slope = s
-        else:
-            visible.append(False) #else it cannot be visible since it lies behind the existing max slope.
-
-    return visible #return the visibility list for each cell.
+    result = subprocess.run(full_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            "GDAL viewshed failed\n"
+            f"Command: {' '.join(full_cmd)}\n"
+            f"STDOUT:\n{result.stdout}\n"
+            f"STDERR:\n{result.stderr}"
+        )
 
 
+def _normalize_sample(sample: Mapping[str, object]) -> dict[str, float]:
+    """
+    Accept both the student's metadata keys and the cleaned version.
+    """
+    lon = float(sample["lon"])
+    lat = float(sample["lat"])
 
-def cells_crossed(
-    affine: Affine,
-    width: int,
-    height: int,
-    E0: float,
-    N0: float,
-    E1: float,
-    N1: float,
-    eps: float = 1e-12,
-):
-
-    dE = E1 - E0
-    dN = N1 - N0 #define direction vector given start and end points.
-
-    r, c = rowcol(affine, E0, N0) #define r,c of start point
-    r_end, c_end = rowcol(affine, E1, N1) #define r,c of end point
-
-    if not (0 <= r < height and 0 <= c < width):
-        return #do not allow indexing outside the raster grid.
-
-    yield (r, c) #output starting cell, then continue.
-
-    resE = affine.a
-    resN = -affine.e  #find the width and height of a single pixel as defined by the raster file.
-
-    step_c = 1 if dE > 0 else (-1 if dE < 0 else 0) #find if ray points east or west.
-    step_r = 1 if dN < 0 else (-1 if dN > 0 else 0) #find if ray points north or south.
-
-    x_left, y_top = affine * (c, r)
-    x_right = x_left + resE
-    y_bottom = y_top - resN #find rectangle bounds of current cell as world coordinates.
-
-    def safe_div(num: float, den: float) -> float:
-        return num / den if abs(den) > eps else math.inf #avoid division by 0 if we are perfectly horizontal or vertical.
-
-    if step_c > 0:
-        tMaxX = safe_div(x_right - E0, dE)
-    elif step_c < 0:
-        tMaxX = safe_div(x_left - E0, dE)
+    if "observer_height" in sample:
+        observer_height = float(sample["observer_height"])
     else:
-        tMaxX = math.inf
+        observer_height = float(sample.get("elevation_m", 0.0))
 
-    #find how far we would need to travel to hit a horizontal border.
+    heading_deg = float(sample.get("heading_deg", 0.0)) % 360.0
 
-    if step_r > 0:
-        tMaxY = safe_div(y_bottom - N0, dN)
-    elif step_r < 0:
-        tMaxY = safe_div(y_top - N0, dN)
-    else:
-        tMaxY = math.inf
+    return {
+        "lon": lon,
+        "lat": lat,
+        "observer_height": observer_height,
+        "heading_deg": heading_deg,
+    }
 
-    #find how far we would need to travel to hit a vertical border.
 
-    tDeltaX = abs(resE / dE) if abs(dE) > eps else math.inf #set jump size for vertical boundary lines.
-    tDeltaY = abs(resN / dN) if abs(dN) > eps else math.inf #set jump size for horiztontal boundary lines.
+def build_frequency_overlay(
+    sample_metadata: Sequence[Mapping[str, object]],
+    tif_path: str | Path,
+    max_distance: float,
+    fan_angle_deg: float = 120.0,
+    csv_crs: str = CSV_CRS,
+) -> dict:
+    """
+    Build a visibility frequency raster from a DEM and a set of observers.
 
-    while (r, c) != (r_end, c_end): #until we hit the boundary line.
-        if tMaxX + eps < tMaxY: #if we will hit a vertical boundary first, move into neighbouring column.
-            c += step_c
-            tMaxX += tDeltaX
-        elif tMaxY + eps < tMaxX: #if we will hit a vertical boundary first, move into neighbouring row.
-            r += step_r
-            tMaxY += tDeltaY
-        else: #if we will hit a corner.
-            next_c = c + step_c
-            next_r = r + step_r
+    Parameters
+    ----------
+    sample_metadata:
+        Iterable of dictionaries containing at least:
+        lon, lat, observer_height, heading_deg
+    tif_path:
+        Path to the DEM GeoTIFF.
+    max_distance:
+        Maximum analysis distance in the DEM's units.
+    fan_angle_deg:
+        Field of view around heading_deg. Use 360 for no directional masking.
+    csv_crs:
+        CRS of the input lon/lat coordinates. Default is EPSG:4326.
 
-            # include the horizontal neighbour
-            if 0 <= r < height and 0 <= next_c < width:
-                yield (r, next_c)
+    Returns
+    -------
+    dict with:
+        count_overlay: 2D numpy array
+        observer_points_xy: list[(x, y)]
+        view_extent: (left, right, bottom, top)
+    """
+    tif_path = Path(tif_path)
 
-            # include the vertical neighbour
-            if 0 <= next_r < height and 0 <= c < width:
-                yield (next_r, c)
-            
-            #move into diagonally neighbouring square.
-            c += step_c
-            r += step_r
-            tMaxX += tDeltaX
-            tMaxY += tDeltaY
+    with rasterio.open(tif_path) as src:
+        if src.crs is None:
+            raise ValueError("The DEM has no CRS.")
+        if abs(src.transform.b) > 1e-12 or abs(src.transform.d) > 1e-12:
+            raise ValueError(
+                "This backend assumes a north-up DEM without rotation."
+            )
 
-        if not (0 <= r < height and 0 <= c < width):
-            return
+        transformer = Transformer.from_crs(csv_crs, src.crs, always_xy=True)
 
-        yield (r, c) #output new cell we have moved into.
+        projected_samples: list[dict[str, float]] = []
+        observer_points_xy: list[tuple[float, float]] = []
+
+        for i, raw_sample in enumerate(sample_metadata, start=1):
+            sample = _normalize_sample(raw_sample)
+
+            x, y = transformer.transform(sample["lon"], sample["lat"])
+
+            if not (
+                src.bounds.left <= x <= src.bounds.right
+                and src.bounds.bottom <= y <= src.bounds.top
+            ):
+                raise ValueError(f"Sample {i} lies outside the loaded GeoTIFF area.")
+
+            projected_samples.append(
+                {
+                    "x_coord": x,
+                    "y_coord": y,
+                    "observer_height": sample["observer_height"],
+                    "heading_deg": sample["heading_deg"],
+                }
+            )
+            observer_points_xy.append((x, y))
+
+        if not projected_samples:
+            raise ValueError("No observer samples were provided.")
+
+        xs = [p[0] for p in observer_points_xy]
+        ys = [p[1] for p in observer_points_xy]
+
+        left = max(src.bounds.left, min(xs) - max_distance)
+        right = min(src.bounds.right, max(xs) + max_distance)
+        bottom = max(src.bounds.bottom, min(ys) - max_distance)
+        top = min(src.bounds.top, max(ys) + max_distance)
+
+        if left >= right or bottom >= top:
+            raise ValueError("The cropped extent is empty. Check the observer coordinates and max distance.")
+
+        crop_window = from_bounds(left, bottom, right, top, src.transform)
+        crop_window = crop_window.round_offsets().round_lengths()
+
+        crop_width = max(1, int(crop_window.width))
+        crop_height = max(1, int(crop_window.height))
+        crop_transform = window_transform(crop_window, src.transform)
+
+        frequency = np.zeros((crop_height, crop_width), dtype=np.uint32)
+
+        # Pixel-centre coordinates for the cropped grid.
+        x_coords = crop_transform.c + (np.arange(crop_width) + 0.5) * crop_transform.a
+        y_coords = crop_transform.f + (np.arange(crop_height) + 0.5) * crop_transform.e
+        xx, yy = np.meshgrid(x_coords, y_coords)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+
+            for i, sample in enumerate(projected_samples):
+                vs_path = tmpdir / f"viewshed_{i:04d}.tif"
+
+                run_viewshed(
+                    dem_path=str(tif_path),
+                    x=sample["x_coord"],
+                    y=sample["y_coord"],
+                    observer_h=sample["observer_height"],
+                    out_tif=str(vs_path),
+                    max_distance=max_distance,
+                )
+
+                with rasterio.open(vs_path) as src_vs:
+                    aligned = np.zeros((crop_height, crop_width), dtype=np.uint8)
+                    reproject(
+                        source=rasterio.band(src_vs, 1),
+                        destination=aligned,
+                        src_transform=src_vs.transform,
+                        src_crs=src_vs.crs,
+                        dst_transform=crop_transform,
+                        dst_crs=src.crs,
+                        resampling=Resampling.nearest,
+                        dst_nodata=0,
+                    )
+
+                # Keep directional filtering in Python so the code works with older GDAL builds.
+                if fan_angle_deg < 360.0:
+                    heading_deg = sample["heading_deg"]
+                    bearing = (np.degrees(np.arctan2(xx - sample["x_coord"], yy - sample["y_coord"])) + 360.0) % 360.0
+                    angular_diff = np.abs((bearing - heading_deg + 180.0) % 360.0 - 180.0)
+                    aligned = np.where(angular_diff <= fan_angle_deg / 2.0, aligned, 0)
+
+                frequency += (aligned > 0).astype(np.uint32)
+
+        view_extent = (left, right, bottom, top)
+
+        vals, freqs = np.unique(frequency[frequency > 0], return_counts=True)
+        print("count frequencies:", dict(zip(vals.tolist(), freqs.tolist())))
+        print("max count =", int(frequency.max()))
+
+        return {
+            "count_overlay": frequency,
+            "observer_points_xy": observer_points_xy,
+            "view_extent": view_extent,
+        }
+
+
+def aggregate_line_of_sight(*args, **kwargs):
+    """
+    Compatibility alias.
+
+    The student project originally used this name for the visibility engine.
+    The new implementation delegates to build_frequency_overlay().
+    """
+    return build_frequency_overlay(*args, **kwargs)

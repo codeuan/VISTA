@@ -2,9 +2,34 @@ import os
 import tempfile
 from pathlib import Path
 import requests
+import math
+from typing import Sequence, Mapping
 
 
 OPENTOPO_API_KEY = os.getenv("OPENTOPO_API_KEY") #retrieve the API key from the local system environment variable (cannot be compromised).
+
+def _bbox_from_samples(sample_metadata, buffer_m: float) -> tuple[float, float, float, float]:
+    """
+    Compute a WGS84 bounding box around lon/lat points with a buffer in metres.
+    Args:
+        sample_metadata: A sequence of dicts, each containing "lon" and "lat" keys.
+        buffer_m: Buffer distance in metres to add around the points.
+    """
+    lons = [float(s["lon"]) for s in sample_metadata]
+    lats = [float(s["lat"]) for s in sample_metadata]
+
+    center_lat = sum(lats) / len(lats)
+    lat_buffer_deg = buffer_m / 111_320.0
+    lon_buffer_deg = buffer_m / (111_320.0 * max(0.1, math.cos(math.radians(center_lat))))
+
+    south = min(lats) - lat_buffer_deg
+    north = max(lats) + lat_buffer_deg
+    west = min(lons) - lon_buffer_deg
+    east = max(lons) + lon_buffer_deg
+
+    return south, north, west, east
+
+
 
 def download_dem_from_opentopo(
     south: float,
@@ -38,5 +63,14 @@ def download_dem_from_opentopo(
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".tif") #allocate space on the hard disk for a tif file.
     tmp.write(response.content) #store data on the tif file.
     tmp.close() #close file to free space.
-
+    
     return tmp.name #return path to tif file.
+
+
+def download_dem_for_samples(
+    sample_metadata,
+    max_distance_m: float,
+    demtype: str = "COP30",
+) -> str:
+    south, north, west, east = _bbox_from_samples(sample_metadata, max_distance_m)
+    return download_dem_from_opentopo(south, north, west, east, demtype=demtype)
