@@ -1,4 +1,4 @@
-from vista import run_program
+from legacy.vista import run_program
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -14,7 +14,7 @@ from matplotlib import cm
 from matplotlib.colors import Normalize
 from pyproj import Transformer
 import matplotlib.image as mpimg
-from API_caller import download_dem_for_samples
+from src.API_caller import download_dem_for_samples
 
 
 tif_path = None

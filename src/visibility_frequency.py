@@ -1,17 +1,12 @@
 # visibility_frequency.py
-
-# Run with:
-#           & "C:\Users\zool2620\AppData\Local\miniconda3\Scripts\conda.exe" run -n vista python visibility_frequency.py
 # This script reads observer locations and metadata from a CSV, computes viewsheds using GDAL's command-line tool, and aggregates the results into a visibility frequency raster. It then saves the aggregated raster as a GeoTIFF and creates a PNG preview with a colorbar and scale bar.
 
 from __future__ import annotations
-
 import math
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -20,17 +15,20 @@ from pyproj import Transformer
 from rasterio.enums import Resampling
 from rasterio.windows import from_bounds, transform as window_transform, bounds as window_bounds
 from rasterio.warp import reproject
+import os 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent #resolve project folder.
 
-CSV_PATH = "Libro2.csv" #CSV where metadata is obtained from (will need upgrading to API call when possible).
-DEM_PATH = "SZ49se_FZ_DSM_1m.tif" #GeoTIFF raster file.
+CSV_PATH = PROJECT_ROOT / "GSV" / "Libro3.csv" #CSV where metadata is obtained from (will need upgrading to API call when possible).
+DEM_PATH = PROJECT_ROOT / "GeoTIFF" / "sicily_cop30_utm33.tif" #GeoTIFF raster file.
 
 OUT_TIF = "visibility_frequency_cropped.tif" #result as stored in a raster file.
 OUT_PNG = "visibility_frequency_cropped.png" #result as stored in a png file.
 
 CSV_CRS = "EPSG:4326" #coordinate system (lon/lat).
 
-MAX_DISTANCE_M = 500.0 #maximum visibility distance.
+MAX_DISTANCE_M = 5000.0 #maximum visibility distance.
 
 FIELD_OF_VIEW_DEG = 120.0 #field of view in degrees.
 
@@ -85,25 +83,25 @@ def run_viewshed(
 
 
 def nice_scale_length(width_m: float) -> float:
-    raw = width_m / 5.0
+    raw = width_m / 5.0 #attempt to split display into 5 chunbks.
     if raw <= 0:
-        return 1.0
-    exp = 10 ** math.floor(math.log10(raw))
-    for m in [1, 2, 5]:
+        return 1.0 #if 0 or a negative number returned, default to 1.
+    exp = 10 ** math.floor(math.log10(raw)) #find largest power of 10 below raw.
+    for m in [1, 2, 5]: #try different multipliers.
         if raw <= m * exp:
-            return float(m * exp)
-    return float(10 * exp)
+            return float(m * exp) #if the multiplier works, use it.
+    return float(10 * exp) #else, default to a multiplier of 10.
 
 
 def add_scale_bar(ax, length_m: float) -> None:
-    x0, x1 = ax.get_xlim()
-    y0, y1 = ax.get_ylim()
+    x0, x1 = ax.get_xlim() #retrieve x limits of axes.
+    y0, y1 = ax.get_ylim() #retrieve y limits of axes.
 
-    x = x0 + (x1 - x0) * 0.06
-    y = y0 + (y1 - y0) * 0.06
+    x = x0 + (x1 - x0) * 0.07 
+    y = y0 + (y1 - y0) * 0.07 #place bar 7% up and to the right from the bottom left corner.
 
-    ax.plot([x, x + length_m], [y, y], linewidth=4, color="black")
-    label = f"{int(length_m)} m" if length_m < 1000 else f"{length_m / 1000:.1f} km"
+    ax.plot([x, x + length_m], [y, y], linewidth=4, color="black") #draw a horizontal line.
+    label = f"{int(length_m)} m" if length_m < 1000 else f"{length_m / 1000:.1f} km" #label line in metres if below 1km or else kilometres.
     ax.text(
         x + length_m / 2.0,
         y + (y1 - y0) * 0.02,
@@ -113,8 +111,52 @@ def add_scale_bar(ax, length_m: float) -> None:
         fontsize=10,
         color="black",
         bbox=dict(facecolor="white", edgecolor="none", alpha=0.7, pad=2),
-    )
+    ) #styling for label.
 
+def process_one_point(  
+    i: int, 
+    dem_path: str,  
+    x: float, 
+    y: float,
+    observer_h: float, 
+    heading_deg: float,  
+    tmpdir: str,
+    crop_height: int, 
+    crop_width: int, 
+    crop_transform,  
+    dem_crs,  
+    xx: np.ndarray,  
+    yy: np.ndarray, 
+) -> np.ndarray: 
+    vs_path = Path(tmpdir) / f"viewshed_{i:04d}.tif"  #create a temporary file for the output TIFF.
+
+    run_viewshed( 
+        dem_path,
+        x,
+        y,
+        observer_h,
+        str(vs_path),
+        MAX_DISTANCE_M,
+    ) #GDAL binary viewshed computation.
+
+    with rasterio.open(vs_path) as src:  # open the TIFF GDAL just made
+        aligned = np.zeros((crop_height, crop_width), dtype=np.uint8)  # make an empty array the size of the final cropped grid
+        reproject(  
+            source=rasterio.band(src, 1),  
+            destination=aligned, 
+            src_transform=src.transform, 
+            src_crs=src.crs,  
+            dst_transform=crop_transform,  
+            dst_crs=dem_crs,
+            resampling=Resampling.nearest, 
+            dst_nodata=0, 
+        ) #reproject array so it fits master grid exactly.
+
+    if FIELD_OF_VIEW_DEG < 360.0: 
+        bearing = (np.degrees(np.arctan2(xx - x, yy - y)) + 360.0) % 360.0 
+        angular_diff = np.abs((bearing - heading_deg + 180.0) % 360.0 - 180.0) 
+        aligned = np.where(angular_diff <= FIELD_OF_VIEW_DEG / 2.0, aligned, 0) 
+    return (aligned > 0).astype(np.uint32) 
 
 def main() -> None:
     csv_path = Path(CSV_PATH)
@@ -172,41 +214,42 @@ def main() -> None:
 
         frequency = np.zeros((crop_height, crop_width), dtype=np.uint32)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
+        with tempfile.TemporaryDirectory() as tmpdir:  #make a temporary folder to hold all every per-point TIFF file.
+            tmpdir = Path(tmpdir)  #create Path object so folder is easier to reference.
+            total_points = len(pts)  #total number of observer points.
 
-            for i, (x, y, observer_h, heading_deg) in enumerate(pts):
-                vs_path = tmpdir / f"viewshed_{i:04d}.tif"
+            max_workers = min(4, os.cpu_count() or 1)  #run 4 CPU workers.
+            print(f"Using {max_workers} workers", flush=True)  #print number of workers (for admin purposes).
 
-                run_viewshed(
-                    str(dem_path),
-                    x,
-                    y,
-                    observer_h,
-                    str(vs_path),
-                    MAX_DISTANCE_M,
-                )
+            with ThreadPoolExecutor(max_workers=max_workers) as executor: #create threadpool.
+                future_to_index = {}  #dictionary to store which future belongs to which coordinates.
+                for i, (x, y, observer_h, heading_deg) in enumerate(pts, start=1):
+                    future = executor.submit(  
+                        process_one_point, 
+                        i,  
+                        str(dem_path),  
+                        x, 
+                        y,  
+                        observer_h,  
+                        heading_deg,  
+                        str(tmpdir), 
+                        crop_height, 
+                        crop_width,  
+                        crop_transform, 
+                        dem.crs, 
+                        xx, 
+                        yy, 
+                    ) #submit job to worker pool and have future returned.
+                    future_to_index[future] = i #store coordinates pertaining to future.
 
-                with rasterio.open(vs_path) as src:
-                    aligned = np.zeros((crop_height, crop_width), dtype=np.uint8)
-                    reproject(
-                        source=rasterio.band(src, 1),
-                        destination=aligned,
-                        src_transform=src.transform,
-                        src_crs=src.crs,
-                        dst_transform=crop_transform,
-                        dst_crs=dem.crs,
-                        resampling=Resampling.nearest,
-                        dst_nodata=0,
-                    )
+                for done_count, future in enumerate(as_completed(future_to_index), start=1):  #as each job is finished, 
+                    point_index = future_to_index[future] #retrieve coordinates of future.
+                    print(
+                        f"Finished actual point {point_index} ({done_count} out of {total_points} completed)",
+                        flush=True,
+                    )  #print progress.
 
-                # Apply heading-based field of view in Python.
-                if FIELD_OF_VIEW_DEG < 360.0:
-                    bearing = (np.degrees(np.arctan2(xx - x, yy - y)) + 360.0) % 360.0
-                    angular_diff = np.abs((bearing - heading_deg + 180.0) % 360.0 - 180.0)
-                    aligned = np.where(angular_diff <= FIELD_OF_VIEW_DEG / 2.0, aligned, 0)
-
-                frequency += (aligned > 0).astype(np.uint32)
+                    frequency += future.result()  #add result to map.
 
         print(f"Frequency raster min/max: {frequency.min()} / {frequency.max()}")
 

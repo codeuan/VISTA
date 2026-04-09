@@ -1,6 +1,6 @@
 #main.py
-from GUI import start_gui
-from vista import run_program
+from src.GUI import start_gui
+from legacy.vista import run_program
 
 import shutil
 if not shutil.which("gdal") and not shutil.which("gdal_raster_viewshed"):

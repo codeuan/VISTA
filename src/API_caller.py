@@ -74,3 +74,4 @@ def download_dem_for_samples(
 ) -> str:
     south, north, west, east = _bbox_from_samples(sample_metadata, max_distance_m)
     return download_dem_from_opentopo(south, north, west, east, demtype=demtype)
+
