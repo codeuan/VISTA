@@ -13,7 +13,8 @@
 #calculate mean visibility strength.
 from ndvi import NDVI
 from datetime import datetime,timezone, timedelta
-
+from visibility_frequency import visibility_frequency
+import numpy as np
 
 if time_to is None:
   time_to = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") #current UTC time when program was run.
@@ -29,10 +30,13 @@ ndvi_result = NDVI(
     time_to=time_to,
 )
 
-mean_visibility_strength = 
+visibility_strength_result = visibility_frequency(sample_metadata, dem_path, max_distance_m)
 
 
-occlusion_fraction =
+mean_visibility_strength = visibility_strength_result["frequency"].mean()
+
+
+occlusion_fraction = 
 
 final_score = (
     a * mean_ndvi
