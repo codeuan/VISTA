@@ -163,7 +163,7 @@ def get_street_view_metadata(
 
     # Expected statuses include OK, ZERO_RESULTS, NOT_FOUND, etc.
     status = data.get("status")
-    if status not in {"OK", "ZERO_RESULTS"}:
+    if status not in {"OK", "ZERO_RESULTS", "NOT_FOUND"}:
         raise RuntimeError(f"Street View metadata request failed: {data}")
 
     return data
@@ -300,27 +300,38 @@ def download_street_view_for_samples(
         if use_sample_heading and "heading_deg" in sample and sample["heading_deg"] not in (None, ""):
             heading = float(sample["heading_deg"])
 
-        metadata = get_street_view_metadata(
-            lat=lat,
-            lon=lon,
-            radius=radius,
-            source=source,
-        )
-
-        if metadata.get("status") == "OK":
-            image_path = download_street_view_image(
+        try:
+            metadata = get_street_view_metadata(
                 lat=lat,
                 lon=lon,
-                size=size,
-                heading=heading,
-                pitch=pitch,
-                fov=fov,
                 radius=radius,
                 source=source,
-                check_metadata_first=False,
             )
-        else:
+
+            if metadata.get("status") == "OK":
+                image_path = download_street_view_image(
+                    lat=lat,
+                    lon=lon,
+                    size=size,
+                    heading=heading,
+                    pitch=pitch,
+                    fov=fov,
+                    radius=radius,
+                    source=source,
+                    check_metadata_first=False,
+                )
+            else:
+                image_path = None
+
+            error = None
+
+        except Exception as e:
+            metadata = {
+                "status": "ERROR",
+                "error": str(e),
+            }
             image_path = None
+            error = str(e)
 
         results.append({
             "index": i,
@@ -329,6 +340,8 @@ def download_street_view_for_samples(
             "heading": heading,
             "image_path": image_path,
             "metadata": metadata,
+            "street_view_status": metadata.get("status"),
+            "error": error,
         })
 
     return results

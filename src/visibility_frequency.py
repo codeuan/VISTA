@@ -430,14 +430,18 @@ def visibility_frequency(sample_metadata, dem_path, max_distance_m):
             print(f"Saved GeoTIFF: {out_tif}")
             print(f"Saved PNG: {out_png}")
 
-            return {
-                "count_overlay": frequency,
-                "observer_points_xy": [(x, y) for x, y, _, _ in pts],
-                "view_extent": (left2, right2, bottom2, top2),
-                "scale_bar_length_m": nice_scale_length(right2 - left2),
-                "output_tif_path": out_tif,
-                "preview_png_path": out_png,
-            }
+        return {
+            "count_overlay": frequency,
+            "frequency": frequency,
+            "raster_transform": crop_transform,
+            "raster_crs": dem_crs,
+            "raster_bounds": (left2, bottom2, right2, top2),
+            "observer_points_xy": [(x, y) for x, y, _, _ in pts],
+            "view_extent": (left2, right2, bottom2, top2),
+            "scale_bar_length_m": nice_scale_length(right2 - left2),
+            "output_tif_path": out_tif,
+            "preview_png_path": out_png,
+        }
 
     finally:
         if projected_dem_path is not None:

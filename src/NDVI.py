@@ -266,11 +266,17 @@ def _fetch_s2_ndvi_for_bbox(
 
     return {
         "ndvi": ndvi,
+        "ndvi_array": ndvi,
         "valid_mask": valid_mask,
         "transform": transform,
+        "raster_transform": transform,
         "crs": crs,
+        "raster_crs": crs,
         "bounds_projected": bbox_proj,
+        "raster_bounds": bbox_proj,
+        "bbox_lonlat": bbox_lonlat,
         "epsg": epsg,
+        "pixel_size_m": pixel_size_m,
         "profile": profile,
         **stats,
     }

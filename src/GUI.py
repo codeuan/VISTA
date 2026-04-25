@@ -13,6 +13,7 @@ from pyproj import Transformer
 import matplotlib.image as mpimg
 from src.API_caller import download_dem_for_samples
 from matplotlib.ticker import MaxNLocator, ScalarFormatter
+from src.optimiser import optimise_candidates, scores_to_dataframe, OptimiserWeights
 
 tif_path = None
 metadata_csv_path = None
@@ -620,27 +621,65 @@ def start_gui(run_program): #entry point for the program.
             right_sidebar.load_dem(dem_path)
 
             print("Number of samples:", len(sample_metadata))
-            
-            result = run_program(
-                sample_metadata,
-                dem_path,
-                max_distance,
-                
-            )
-            print("Total points received:", len(sample_metadata))
 
-            right_sidebar.set_results(
-                result["count_overlay"],
-                observer_points=result["observer_points_xy"],
-                view_extent=result["view_extent"],
-                scale_bar_length_m=result["scale_bar_length_m"],
+            ranked_scores = optimise_candidates(
+                sample_metadata=sample_metadata,
+                dem_path=dem_path,
+                max_distance_m=max_distance,
+                weights=OptimiserWeights(
+                    ndvi=0.40,
+                    visibility_strength=0.40,
+                    unseenness=0.00,
+                    obstacle_penalty=0.20,
+                ),
+                download_images=False,
             )
+
+            results_df = scores_to_dataframe(ranked_scores)
+
+            print("\n=== OPTIMISER RESULTS ===")
+            print("Total points received:", len(sample_metadata))
+            print("Total ranked points:", len(ranked_scores))
+
+            columns_to_print = [
+                "index",
+                "lon",
+                "lat",
+                "heading_deg",
+                "mean_ndvi",
+                "ndvi_score",
+                "mean_visibility_count",
+                "visibility_score",
+                "unseenness_score",
+                "occlusion_fraction",
+                "final_score",
+            ]
+
+            existing_columns = [
+                column for column in columns_to_print
+                if column in results_df.columns
+            ]
+
+            print(results_df[existing_columns].to_string(index=False))
+
+            best_candidate = ranked_scores[0]
+
+            print("\n=== BEST CANDIDATE ===")
+            print(f"Index: {best_candidate.index}")
+            print(f"Longitude: {best_candidate.lon}")
+            print(f"Latitude: {best_candidate.lat}")
+            print(f"Final score: {best_candidate.final_score}")
+            print(f"Mean NDVI: {best_candidate.mean_ndvi}")
+            print(f"Mean visibility count: {best_candidate.mean_visibility_count}")
+            print(f"Obstacle fraction: {best_candidate.occlusion_fraction}")
 
             right_sidebar.canvas.draw_idle()
 
         except ValueError as e:
+            print("Input error:", e)
             show_error(str(e))
         except Exception as e:
+            print("Optimiser error:", e)
             show_error(str(e))
 
     global tif_path 
