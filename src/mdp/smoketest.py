@@ -3,6 +3,9 @@ Quick smoke test for the VISTA MDP environment.
 
 This does not use the real viewshed yet.
 It uses a fake viewshed so we can check that the MDP loop runs.
+
+Note: this is a primitive version that always commits to the first valid action 
+without scouting or considering future rewards.
 """
 
 from __future__ import annotations
@@ -67,9 +70,9 @@ def main() -> None:
 
         # For now, choose the first valid non-stop action if possible.
         # STOP is usually the final action in our action list.
-        action_number = valid_actions[0]
+        action_number = valid_actions[0] #look at the list of legal actions and pick the first one.
 
-        state, reward, done, info = env.step(action_number)
+        state, reward, done, info = env.step(action_number) #commit to the action.
         total_reward += reward
 
         print(f"Step: {state.steps_taken}")
